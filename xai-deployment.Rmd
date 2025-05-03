@@ -1,0 +1,367 @@
+---
+title: "Model-agnostic methods: PDP"
+output: html_document
+---
+
+
+```{r}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(randomForest)
+library(pdp)
+library(patchwork)
+library(iml)
+library(corrplot)
+library(viridis)
+```
+
+
+## Bikes
+
+```{r}
+bikes <- read.csv("data/day.csv", stringsAsFactors = FALSE)
+```
+
+
+We fit a random forest model for the prediction of bike rentals (**cnt**)
+
+- `workingday`: 1 if the day is a working day, 0 otherwise.
+- `holiday`: 1 if the day is a holiday, 0 otherwise.
+- `season`: 1 for winter, 2 for spring, 3 for summer, 4 for fall. We will use one-hot encoding.
+- `MISTY`: We create a feature that is 1 when the `weathersit` is 2 (misty), 0 otherwise.
+- `RAIN`: We create a feature that is 1 when the `weathersit` is 3 or 4 (rainy), 0 otherwise.
+- Denormalize the `temp`, `hum`, and `windspeed` columns.
+  - `temp`: Multiply by 47 and add 8. The original value come from (t-t_min)/(t_max-t_min), t_min=-8, t_max=+39
+  - `hum`: Multiply by 100. The original values are divided by 100.
+  - `windspeed`: Multiply by 67. The original values are divided by 67.
+- `days_since_2011`: We create a new feature that is the number of days since January 1, 2011.
+
+```{r}
+# Preprocess the data
+bikes$season <- factor(bikes$season, levels = c(1, 2, 3, 4), labels = c("Winter", "Spring", "Summer", "Fall"))
+bikes$season <- relevel(bikes$season, ref = "Spring")
+
+# one-hot encoding
+# 1: winter, 2: spring, 3: summer, 4: fall
+# bikes$winter <- ifelse(data$season == 1, 1, 0)
+# bikes$summer <- ifelse(data$season == 3, 1, 0)
+# bikes$fall <- ifelse(data$season == 4, 1, 0)
+
+bikes$MISTY <- ifelse(bikes$weathersit == 2, 1, 0)
+bikes$RAIN <- ifelse(bikes$weathersit %in% c(3, 4), 1, 0)
+
+bikes <- bikes |> mutate(
+  temp = temp * 47 - 8,
+  hum = hum * 100,
+  windspeed = windspeed * 67
+)
+
+bikes$dteday <- as.Date(bikes$dteday)
+bikes$days_since_2011 <- as.numeric(difftime(bikes$dteday, as.Date("2011-01-01"), units = "days"))
+
+bikes <- bikes |> select(
+  cnt, 
+  workingday, 
+  holiday,
+  temp, 
+  hum, 
+  windspeed, 
+  days_since_2011,
+  season, 
+  MISTY, 
+  RAIN
+)
+```
+
+
+Take a sample of 2/3 of the data for training and 1/3 for testing.
+
+```{r}
+bikes_train_index <- sample(1:nrow(bikes), 2/3 * nrow(bikes))
+bikes_train <- bikes[bikes_train_index, ]
+bikes_test <- bikes[-bikes_train_index, ]
+
+set.seed(42) # for reproducibility
+bikes_rf <- randomForest(
+  formula = cnt ~ ., 
+  data    = bikes_train
+)
+```
+
+
+### One dimensional Partial Dependence Plot.
+
+We use `iml` package to compute the partial dependence plot (PDP) for the random forest model
+
+`Predictor$new()`: wraps the random‐forest so that iml knows how to call `predict()` and what the feature data are.
+
+`FeatureEffect$new(..., method="pdp")`: computes the average model prediction as one feature varies, holding others at their observed values.
+
+```{r}
+pred.bike = Predictor$new(bikes_rf, data = bikes_test)
+pdp = FeatureEffect$new(pred.bike, "temp", method = "pdp")
+
+
+p1 = pdp$plot() +
+  scale_x_continuous('Temperature', limits = c(0, NA)) +
+  scale_y_continuous('Predicted number of bikes', limits = c(0, 5500)) +
+  theme_bw()
+
+pdp$set.feature("hum")
+p2 = pdp$plot() +
+  scale_x_continuous('Humidity', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 5500)) +
+  theme_bw()
+
+pdp$set.feature("windspeed")
+p3 = pdp$plot() +
+  scale_x_continuous('Wind speed', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 6000)) +
+  theme_bw()
+
+pdp$set.feature("days_since_2011") 
+p4 = pdp$plot() +
+  scale_x_continuous('Days since 2011', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 6000)) +
+  theme_bw()
+```
+
+```{r}
+# show the plots
+(p1 | p2)
+```
+
+```{r}
+# show the plots
+(p3 | p4)
+```
+
+
+### Correlation matrix
+
+```{r}
+# compute correlation matrix
+bikes.corr <- cor(bikes[, c("temp", "hum", "windspeed", "days_since_2011", "cnt")])
+
+# visualize correlation matrix
+p1 <- corrplot(bikes.corr, 
+               order = 'AOE', 
+               addCoef.col = 'black', 
+               tl.pos = 'd', 
+               type = "upper")
+
+p1
+```
+
+### ICE centered
+
+```{r}
+ytext1 = sprintf("Different to prediction at temp = %.1f", min(bikes$temp))
+ice1 = FeatureEffect$new(pred.bike, feature = "temp", center.at = min(bikes$temp), method = "ice")$plot() +
+  scale_y_continuous(ytext1) +
+  theme_bw()
+
+ytext2 = sprintf("Different to prediction at hum = %.1f", min(bikes$hum))
+ice2 = FeatureEffect$new(pred.bike, feature = "hum", center.at = min(bikes$hum), method = "ice")$plot() +
+  scale_y_continuous(ytext2) +
+  theme_bw()
+
+ytext3 = sprintf("Different to prediction at windspeed = %.1f", min(bikes$windspeed))
+ice3 = FeatureEffect$new(pred.bike, feature = "windspeed", center.at = min(bikes$windspeed), method = "ice")$plot() +
+ scale_y_continuous(ytext3) +
+  theme_bw()
+
+ytext4 = sprintf("Different to prediction at days_since_2011 = %.1f", min(bikes$days_since_2011))
+ice4 = FeatureEffect$new(pred.bike, feature = "days_since_2011", center.at = min(bikes$days_since_2011), method = "ice")$plot() +
+  scale_y_continuous(ytext4)+
+  theme_bw()
+```
+```{r}
+# show plots
+(ice1 | ice2)
+```
+
+
+```{r}
+# show plots
+(ice3 | ice4)
+```
+
+
+```{r}
+(p1 | ice1)
+```
+
+```{r}
+(p2 | ice2)
+```
+
+```{r}
+(p3 | ice3)
+```
+
+```{r}
+(p4 | ice4)
+```
+
+
+### Bidimensional PDP
+
+```{r}
+pred.bike = Predictor$new(bikes_rf, data = bikes_test)
+pdp = FeatureEffect$new(pred.bike, c("temp", "hum"), method = "pdp")
+```
+
+
+```{r}
+p1 = pdp$plot() +
+  scale_x_continuous('Temperature') +
+  scale_y_continuous('Humidity') +
+  scale_fill_viridis("Bike Count") +
+  labs(fill = "Predicted number of bikes") +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+p1
+```
+## Housing price
+
+```{r}
+housing <- read.csv("data/kc_house_data.csv", stringsAsFactors = FALSE)
+```
+
+
+```{r}
+housing <- housing |>
+  select(
+    price,
+    bedrooms,
+    bathrooms,
+    sqft_living,
+    sqft_lot,
+    floors,
+    yr_built
+)
+```
+
+
+```{r}
+housing_train_index <- sample(1:nrow(housing), 4/5 * nrow(housing))
+
+housing_train <- housing[housing_train_index, ]
+housing_test <- housing[-housing_train_index, ]
+```
+
+
+```{r}
+set.seed(42)
+housing_rf <- randomForest(
+  formula = price ~ ., 
+  data    = housing_train
+)
+```
+
+
+```{r}
+housing_test <- sample_n(housing_test, 500)
+
+pred.housing = Predictor$new(housing_rf, data = housing_test)
+
+pdp = FeatureEffect$new(pred.housing, "sqft_living", method = "pdp")
+p1 = pdp$plot() +
+  scale_x_continuous('Living area (sqft)', limits = c(0, NA)) +
+  scale_y_continuous('Predicted price', limits = c(0, 3000000)) +
+  theme_bw()
+
+
+pdp$set.feature("bedrooms")
+p2 = pdp$plot() +
+  scale_x_continuous('Bedrooms', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 2000000)) +
+  theme_bw()
+
+
+pdp$set.feature("bathrooms")
+p3 = pdp$plot() +
+  scale_x_continuous('Bathrooms', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 2000000)) +
+  theme_bw()
+
+
+pdp$set.feature("floors")
+p4 = pdp$plot() +
+  scale_x_continuous('Floors', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 2000000)) +
+  theme_bw()
+```
+
+```{r}
+ytext1 = sprintf("Different to prediction at sqft_living = %.1f", min(housing$sqft_living))
+ice1 = FeatureEffect$new(pred.housing, feature = "sqft_living", center.at = min(housing$sqft_living), method = "ice")$plot() +
+  scale_y_continuous(ytext1) +
+  theme_bw()
+
+
+ytext2 = sprintf("Different to prediction at bedrooms = %.1f", min(housing$bedrooms))
+ice2 = FeatureEffect$new(pred.housing, feature = "bedrooms", center.at = min(housing$bedrooms), method = "ice")$plot() +
+  scale_y_continuous(ytext2) +
+  theme_bw()
+
+
+ytext3 = sprintf("Different to prediction at bathrooms = %.1f", min(housing$bathrooms))
+ice3 = FeatureEffect$new(pred.housing, feature = "bathrooms", center.at = min(housing$bathrooms), method = "ice")$plot() +
+  scale_y_continuous(ytext3) +
+  theme_bw()
+
+
+ytext4 = sprintf("Different to prediction at floors = %.1f", min(housing$floors))
+ice4 = FeatureEffect$new(pred.housing, feature = "floors", center.at = min(housing$floors), method = "ice")$plot() +
+  scale_y_continuous(ytext4) +
+  theme_bw()
+```
+
+
+
+```{r}
+# show plots
+(p1 | ice1)
+```
+
+```{r}
+# show plots
+(p2 | ice2)
+```
+
+```{r}
+# show plots
+(p3 | ice3)
+```
+
+```{r}
+# show plots
+(p4 | ice4)
+```
+
+
+
+```{r}
+
+# compute correlation matrix
+housing.corr <- cor(housing[, c("sqft_living", "floors", "bedrooms", "bathrooms", "yr_built", "sqft_lot")])
+
+# visualize correlation matrix
+p1 <- corrplot(housing.corr, 
+               order = 'AOE', 
+               addCoef.col = 'black', 
+               tl.pos = 'd', 
+               type = "upper")
+
+p1
+```
+
+
+
