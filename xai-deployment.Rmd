@@ -265,6 +265,9 @@ housing_rf <- randomForest(
 )
 ```
 
+### One dimensional Partial Dependence Plot.
+
+We sample 500 rows from the test set to speed up the computation of the PDP and ICE
 
 ```{r}
 housing_test <- sample_n(housing_test, 500)
@@ -298,6 +301,7 @@ p4 = pdp$plot() +
   scale_y_continuous('', limits = c(0, 2000000)) +
   theme_bw()
 ```
+### ICE centered plots
 
 ```{r}
 ytext1 = sprintf("Different to prediction at sqft_living = %.1f", min(housing$sqft_living))
@@ -324,8 +328,6 @@ ice4 = FeatureEffect$new(pred.housing, feature = "floors", center.at = min(housi
   theme_bw()
 ```
 
-
-
 ```{r}
 # show plots
 (p1 | ice1)
@@ -346,10 +348,9 @@ ice4 = FeatureEffect$new(pred.housing, feature = "floors", center.at = min(housi
 (p4 | ice4)
 ```
 
-
+### Correlation matrix
 
 ```{r}
-
 # compute correlation matrix
 housing.corr <- cor(housing[, c("sqft_living", "floors", "bedrooms", "bathrooms", "yr_built", "sqft_lot")])
 
@@ -362,6 +363,4 @@ p1 <- corrplot(housing.corr,
 
 p1
 ```
-
-
 
