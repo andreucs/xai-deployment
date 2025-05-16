@@ -3,6 +3,9 @@ title: "Model-agnostic methods: PDP"
 output: html_document
 ---
 
+# Model-agnostic methods: PDP
+
+## Load libraries
 
 ```{r}
 # Load required libraries
